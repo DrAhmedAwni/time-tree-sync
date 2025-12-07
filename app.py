@@ -2,53 +2,65 @@ import os
 import time
 import threading
 import subprocess
-from flask import Flask, send_file, abort
+from flask import Flask, jsonify
 
-OUTPUT_FILE = os.getenv("OUTPUT_FILE", "timetree.ics")
-SYNC_INTERVAL_MINUTES = int(os.getenv("SYNC_INTERVAL_MINUTES", "15"))
-CAL_CODE = os.getenv("TIMETREE_CAL_CODE")
-
-def run_exporter():
-    if not CAL_CODE:
-        print("TIMETREE_CAL_CODE not set")
-        return
-
-    print("Running TimeTree exporter...")
-    cmd = [
-        "timetree-exporter",
-        "-c", CAL_CODE,
-        "-o", OUTPUT_FILE,
-    ]
-    # Email & password come from env:
-    # TIMETREE_EMAIL and TIMETREE_PASSWORD (used by timetree-exporter)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print("Exporter failed:", result.stderr)
-    else:
-        print("Exporter finished successfully")
-
-def sync_loop():
-    while True:
-        try:
-            run_exporter()
-        except Exception as e:
-            print("Error in sync_loop:", e)
-        time.sleep(SYNC_INTERVAL_MINUTES * 60)
+TIMETREE_EMAIL = os.getenv("TIMETREE_EMAIL")
+TIMETREE_PASSWORD = os.getenv("TIMETREE_PASSWORD")
+SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL_MINUTES", "15"))
 
 app = Flask(__name__)
 
-@app.route("/calendar.ics")
-def calendar():
-    if not os.path.exists(OUTPUT_FILE):
-        return abort(404, description="ICS file not generated yet")
-    return send_file(OUTPUT_FILE, mimetype="text/calendar")
+def get_all_units():
+    units = []
+    for key, value in os.environ.items():
+        # Skip system / base variables
+        if key in ["TIMETREE_EMAIL", "TIMETREE_PASSWORD", "SYNC_INTERVAL_MINUTES", "PORT"]:
+            continue
+        
+        if "|" in value:
+            timetree_id, google_id = value.split("|")
+            units.append({
+                "name": key,
+                "timetree_id": timetree_id.strip(),
+                "google_id": google_id.strip()
+            })
+
+    return units
+
+
+def sync_one_unit(unit):
+    print(f"Syncing {unit['name']} → TimeTree:{unit['timetree_id']} → Google:{unit['google_id']}")
+
+    cmd = [
+        "timetree-exporter",
+        "-e", TIMETREE_EMAIL,
+        "-p", TIMETREE_PASSWORD,
+        "-c", unit["timetree_id"],
+        "--google-calendar", unit["google_id"]
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    print(result.stdout)
+    print(result.stderr)
+
+
+def sync_loop():
+    while True:
+        units = get_all_units()
+        print("Units found:", units)
+
+        for unit in units:
+            sync_one_unit(unit)
+
+        time.sleep(SYNC_INTERVAL * 60)
+
+
+@app.route("/")
+def index():
+    return jsonify({"status": "running", "units": get_all_units()})
+
 
 if __name__ == "__main__":
-    # Run once on start so Google doesn't get 404
-    run_exporter()
-
-    # Background sync every X minutes
     threading.Thread(target=sync_loop, daemon=True).start()
-
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
