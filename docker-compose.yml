@@ -4,9 +4,5 @@ services:
   timetree-sync:
     build: .
     container_name: timetree-sync
-    environment:
-      # These two you can override in Hostinger if you want:
-      SYNC_INTERVAL_MINUTES: "15"
-      PORT: "8000"
     ports:
       - "8000:8000"
